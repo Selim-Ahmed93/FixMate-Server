@@ -1,4 +1,5 @@
 import { MongoClient } from "mongodb";
+import createIndexes from "./indexes.js";
 
 const uri = process.env.MONGODB_URI;
 const dbName = process.env.DB_NAME;
@@ -12,6 +13,7 @@ const connectDB = async () => {
     await client.connect();
 
     database = client.db(dbName);
+    await createIndexes(database);
 
     // Create application collections
     const collections = [
@@ -45,3 +47,11 @@ const connectDB = async () => {
 };
 
 export default connectDB;
+
+export const getDB = () => {
+  if (!database) {
+    throw new Error("Database is not connected!");
+  }
+
+  return database;
+};
