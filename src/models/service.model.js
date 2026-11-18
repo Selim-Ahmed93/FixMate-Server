@@ -8,16 +8,49 @@ const servicesCollection = () => {
 
 // 1. Create a new service
 export const createService = async (serviceData) => {
+  const {
+    title,
+    category,
+    description,
+    image,
+    basePrice,
+    estimatedDuration,
+    serviceMode,
+    serviceArea,
+    technicianName,
+    technicianEmail,
+  } = serviceData;
+
+  if (
+    !title ||
+    !category ||
+    !description ||
+    !technicianName ||
+    !technicianEmail ||
+    typeof basePrice !== "number" ||
+    !Number.isFinite(basePrice) ||
+    basePrice <= 0
+  ) {
+    throw new Error("Invalid service information");
+  }
+
   const newService = {
-    ...serviceData,
+    title,
+    category,
+    description,
+    image,
+    basePrice,
+    estimatedDuration,
+    serviceMode,
+    serviceArea,
+    technicianName,
+    technicianEmail,
     approvalStatus: "pending",
     isAvailable: true,
     createdAt: new Date(),
   };
 
-  const result = await servicesCollection().insertOne(newService);
-
-  return result;
+  return await servicesCollection().insertOne(newService);
 };
 
 // 2. Get all approved and available services
@@ -54,20 +87,60 @@ export const updateService = async (id, updateData) => {
     return null;
   }
 
-  const result = await servicesCollection().updateOne(
+  const allowedFields = [
+    "title",
+    "category",
+    "description",
+    "image",
+    "basePrice",
+    "estimatedDuration",
+    "serviceMode",
+    "serviceArea",
+    "isAvailable",
+  ];
+
+  const filteredData = {};
+
+  for (const field of allowedFields) {
+    if (updateData[field] !== undefined) {
+      filteredData[field] = updateData[field];
+    }
+  }
+
+  if (
+  filteredData.basePrice !== undefined &&
+  (
+    typeof filteredData.basePrice !== "number" ||
+    !Number.isFinite(filteredData.basePrice) ||
+    filteredData.basePrice <= 0
+  )
+) {
+  throw new Error("Invalid service price");
+}
+
+  if (Object.keys(filteredData).length === 0) {
+    throw new Error("No valid fields provided for update");
+  }
+
+  return await servicesCollection().updateOne(
     { _id: new ObjectId(id) },
     {
-      $set: updateData,
+      $set: filteredData,
     }
   );
-
-  return result;
 };
 
+// 6. Update service approval status
 // 6. Update service approval status
 export const updateServiceApproval = async (id, status) => {
   if (!ObjectId.isValid(id)) {
     return null;
+  }
+
+  const allowedStatuses = ["approved", "rejected"];
+
+  if (!allowedStatuses.includes(status)) {
+    throw new Error("Invalid approval status");
   }
 
   return await servicesCollection().updateOne(
