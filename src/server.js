@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import connectDB from "./config/db.js";
+import serviceRoutes from "./routes/service.routes.js";
+import bookingRoutes from "./routes/booking.routes.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -10,6 +12,9 @@ const PORT = process.env.PORT || 5000;
 
 app.use(express.json());
 app.use(cors());
+// API Routes
+app.use("/api/services", serviceRoutes);
+app.use("/api/bookings", bookingRoutes);
 
 app.get("/", (req, res) => {
   res.status(200).json({ message: "Welcome to the FixMate API" });
