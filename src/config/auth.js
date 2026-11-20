@@ -1,3 +1,4 @@
+
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
 
@@ -16,7 +17,7 @@ export const initializeAuth = () => {
     user: {
       additionalFields: {
         role: {
-          type: "string",
+          type: ["customer", "technician"],
           required: false,
           defaultValue: "customer",
           input: true,
@@ -38,6 +39,20 @@ export const initializeAuth = () => {
           type: "string",
           required: false,
           input: true,
+        },
+      },
+    },
+
+    databaseHooks: {
+      user: {
+        update: {
+          before: async (userData) => {
+            const { role, ...safeData } = userData;
+
+            return {
+              data: safeData,
+            };
+          },
         },
       },
     },
