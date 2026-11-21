@@ -1,3 +1,31 @@
+const findEquivalentIndex = async (collection, keys, options) => {
+  try {
+    const indexes = await collection.indexes();
+    const desiredUnique = Boolean(options.unique);
+    const desiredPartial = options.partialFilterExpression
+      ? JSON.stringify(options.partialFilterExpression)
+      : null;
+
+    return indexes.find((index) => {
+      if (JSON.stringify(index.key) !== JSON.stringify(keys)) {
+        return false;
+      }
+
+      if (Boolean(index.unique) !== desiredUnique) {
+        return false;
+      }
+
+      const existingPartial = index.partialFilterExpression
+        ? JSON.stringify(index.partialFilterExpression)
+        : null;
+
+      return existingPartial === desiredPartial;
+    });
+  } catch {
+    return undefined;
+  }
+};
+
 const createIndexSafely = async (collection, keys, options = {}) => {
   try {
     await collection.createIndex(keys, options);
@@ -12,6 +40,22 @@ const createIndexSafely = async (collection, keys, options = {}) => {
         `Skipped index ${options.name || JSON.stringify(keys)} because existing duplicate data was found.`,
       );
       return;
+    }
+
+    const isIndexConflict =
+      error?.code === 85 ||
+      error?.code === 86 ||
+      /already exists with a different name/i.test(error?.message || "");
+
+    if (isIndexConflict) {
+      const equivalent = await findEquivalentIndex(collection, keys, options);
+
+      if (equivalent) {
+        console.warn(
+          `Skipped index ${options.name || JSON.stringify(keys)} because equivalent index ${equivalent.name} already exists.`,
+        );
+        return;
+      }
     }
 
     throw error;

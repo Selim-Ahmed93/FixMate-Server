@@ -81,9 +81,11 @@ Important indexes include:
   statuses, which prevents duplicate active bookings.
 - Lookup indexes for customer, technician, status, approval, and payment queries.
 
-Index creation is idempotent. If existing duplicate data prevents a unique index
-from being created, the server logs a warning instead of crashing. Clean up the
-duplicate data and restart to create the index.
+Index creation is idempotent. Equivalent indexes created under older default names
+are detected and skipped, so upgrading an existing database does not fail startup.
+If existing duplicate data prevents a unique index from being created, the server
+logs a warning instead of crashing. Clean up the duplicate data and restart to
+create the index.
 
 ### Test database cleanup
 
