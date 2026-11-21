@@ -88,9 +88,9 @@ duplicate data and restart to create the index.
 ### Test database cleanup
 
 Integration tests create `fixmate_test_*` databases. The suite attempts to drop the
-database after the run. If the MongoDB user cannot run `dropDatabase`, it deletes
-the documents from every collection instead. The empty test database may remain
-visible until an administrator removes it.
+database after the run. If the MongoDB user cannot run `dropDatabase`, it drops each
+collection, then deletes documents if collection drops are also not permitted. An
+empty database shell may remain visible until an administrator removes it.
 
 ## 4. Deploy the API
 

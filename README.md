@@ -170,10 +170,11 @@ Passwords come only from `ADMIN_PASSWORD` and `SEED_PASSWORD`.
 ## Testing
 
 The integration suite starts the real Express app against a temporary database
-named `fixmate_test_<timestamp>_<random>`. It requires `MONGODB_URI` to be present
-in `.env` (or the process environment) and a MongoDB user that can create that
-database. After the run it drops the database; if the user lacks `dropDatabase`
-permission, it deletes the documents from every collection instead.
+named `fixmate_test_<timestamp>_<random>`. It loads `.env` when present and
+otherwise uses the process environment. `MONGODB_URI` is required, and the MongoDB
+user must be able to create that database. After the run it drops the database; if
+the user lacks `dropDatabase` permission, it drops each collection, then deletes
+documents if collection drops are also not permitted.
 
 ```bash
 npm test
@@ -228,18 +229,20 @@ tests/
 
 ## Response format
 
-Successful responses use:
+Successful responses always include `success` and `message`, plus endpoint-specific
+fields. For example:
 
 ```json
 {
   "success": true,
-  "message": "Human-readable message",
-  "data": {}
+  "message": "Services retrieved successfully",
+  "totalServices": 12,
+  "services": []
 }
 ```
 
-The exact key varies by endpoint (for example `services`, `bookings`, `payments`,
-`user`, `stats`, or `sessionId`). Errors use:
+Other endpoints use keys such as `bookings`, `payments`, `user`, `stats`,
+`serviceId`, or `sessionId`. Errors use:
 
 ```json
 {
