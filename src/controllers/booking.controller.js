@@ -1,16 +1,26 @@
-
 import {
   createBooking,
   getBookingById,
   getCustomerBookings,
   getTechnicianBookings,
+  getAllBookings,
   getActiveBooking,
   updateBookingStatus,
   updateFinalAmount,
   cancelBooking,
+  validateBookingStatus,
 } from "../models/booking.model.js";
 
 import { getServiceById } from "../models/service.model.js";
+import { AppError } from "../utils/errors.js";
+import { sendControllerError } from "../utils/controller.js";
+import {
+  isObjectId,
+  requireFutureDate,
+  requirePhone,
+  requirePositiveNumber,
+  requireString,
+} from "../utils/validate.js";
 
 // 1. Create a new booking
 export const createBookingController = async (req, res) => {
@@ -22,13 +32,12 @@ export const createBookingController = async (req, res) => {
       });
     }
 
-    const {
-      serviceId,
-      customerPhone,
-      address,
-      preferredDate,
-      problemDescription,
-    } = req.body;
+    const body = req.body || {};
+    const { serviceId } = body;
+
+    if (!isObjectId(serviceId)) {
+      throw new AppError("Service ID is invalid", 400);
+    }
 
     const service = await getServiceById(serviceId);
 
@@ -39,10 +48,7 @@ export const createBookingController = async (req, res) => {
       });
     }
 
-    if (
-      service.approvalStatus !== "approved" ||
-      !service.isAvailable
-    ) {
+    if (service.approvalStatus !== "approved" || !service.isAvailable) {
       return res.status(400).json({
         success: false,
         message: "This service is not available",
@@ -56,25 +62,24 @@ export const createBookingController = async (req, res) => {
       });
     }
 
-    const bookingDate = new Date(preferredDate);
-
-    if (
-      !customerPhone ||
-      !address ||
-      !preferredDate ||
-      Number.isNaN(bookingDate.getTime()) ||
-      bookingDate <= new Date() ||
-      !problemDescription
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide valid booking information",
-      });
-    }
+    const customerPhone = requirePhone(
+      body.customerPhone || req.user.phone,
+      "Customer phone",
+    );
+    const address = requireString(body.address, "Address", {
+      min: 5,
+      max: 500,
+    });
+    const preferredDate = requireFutureDate(body.preferredDate);
+    const problemDescription = requireString(
+      body.problemDescription,
+      "Problem description",
+      { min: 5, max: 1000 },
+    );
 
     const existingBooking = await getActiveBooking(
-      serviceId,
-      req.user.email
+      service._id.toString(),
+      req.user.email,
     );
 
     if (existingBooking) {
@@ -96,7 +101,7 @@ export const createBookingController = async (req, res) => {
       customerEmail: req.user.email,
       customerPhone,
       address,
-      preferredDate: bookingDate,
+      preferredDate,
       problemDescription,
     };
 
@@ -108,10 +113,7 @@ export const createBookingController = async (req, res) => {
       bookingId: result.insertedId,
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
 
@@ -134,12 +136,10 @@ export const getCustomerBookingsController = async (req, res) => {
       bookings,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
+
 // 3. Get technician's bookings
 export const getTechnicianBookingsController = async (req, res) => {
   try {
@@ -159,15 +159,42 @@ export const getTechnicianBookingsController = async (req, res) => {
       bookings,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
-// 4. Get booking by ID
+
+// 4. Get all bookings (Admin)
+export const getAllBookingsController = async (req, res) => {
+  try {
+    const { status, search } = req.query;
+
+    validateBookingStatus(status);
+
+    const bookings = await getAllBookings({
+      status,
+      search: search
+        ? requireString(search, "Search", { max: 100 })
+        : undefined,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "All bookings retrieved successfully",
+      totalBookings: bookings.length,
+      bookings,
+    });
+  } catch (error) {
+    sendControllerError(res, error);
+  }
+};
+
+// 5. Get booking by ID
 export const getBookingByIdController = async (req, res) => {
   try {
+    if (!isObjectId(req.params.id)) {
+      throw new AppError("Booking ID is invalid", 400);
+    }
+
     const booking = await getBookingById(req.params.id);
 
     if (!booking) {
@@ -200,13 +227,11 @@ export const getBookingByIdController = async (req, res) => {
       booking,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
-// 5. Update booking status
+
+// 6. Update booking status
 export const updateBookingStatusController = async (req, res) => {
   try {
     if (req.user?.role !== "technician") {
@@ -216,7 +241,13 @@ export const updateBookingStatusController = async (req, res) => {
       });
     }
 
-    const { status } = req.body;
+    if (!isObjectId(req.params.id)) {
+      throw new AppError("Booking ID is invalid", 400);
+    }
+
+    const status = requireString(req.body?.status, "Booking status", {
+      max: 30,
+    });
 
     const booking = await getBookingById(req.params.id);
 
@@ -234,31 +265,21 @@ export const updateBookingStatusController = async (req, res) => {
       });
     }
 
-    const result = await updateBookingStatus(
-      req.params.id,
-      status
-    );
+    await updateBookingStatus(req.params.id, status);
 
-    if (!result || result.modifiedCount === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Booking status could not be updated",
-      });
-    }
+    const updatedBooking = await getBookingById(req.params.id);
 
     res.status(200).json({
       success: true,
       message: "Booking status updated successfully",
+      booking: updatedBooking,
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
 
-// 6. Update final amount
+// 7. Update final amount and complete booking
 export const updateFinalAmountController = async (req, res) => {
   try {
     if (req.user?.role !== "technician") {
@@ -268,18 +289,14 @@ export const updateFinalAmountController = async (req, res) => {
       });
     }
 
-    const { finalAmount } = req.body;
-
-    if (
-      typeof finalAmount !== "number" ||
-      !Number.isFinite(finalAmount) ||
-      finalAmount <= 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide a valid final amount",
-      });
+    if (!isObjectId(req.params.id)) {
+      throw new AppError("Booking ID is invalid", 400);
     }
+
+    const finalAmount = requirePositiveNumber(
+      req.body?.finalAmount,
+      "Final amount",
+    );
 
     const booking = await getBookingById(req.params.id);
 
@@ -304,30 +321,21 @@ export const updateFinalAmountController = async (req, res) => {
       });
     }
 
-    const result = await updateFinalAmount(
-      req.params.id,
-      finalAmount
-    );
+    await updateFinalAmount(req.params.id, finalAmount);
 
-    if (!result || result.modifiedCount === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Final amount could not be updated",
-      });
-    }
+    const completedBooking = await getBookingById(req.params.id);
 
     res.status(200).json({
       success: true,
       message: "Final amount updated and booking completed successfully",
+      booking: completedBooking,
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
-// 7. Cancel booking
+
+// 8. Cancel booking
 export const cancelBookingController = async (req, res) => {
   try {
     if (req.user?.role !== "customer") {
@@ -335,6 +343,10 @@ export const cancelBookingController = async (req, res) => {
         success: false,
         message: "Only customers can cancel bookings",
       });
+    }
+
+    if (!isObjectId(req.params.id)) {
+      throw new AppError("Booking ID is invalid", 400);
     }
 
     const booking = await getBookingById(req.params.id);
@@ -360,26 +372,13 @@ export const cancelBookingController = async (req, res) => {
       });
     }
 
-    const result = await cancelBooking(
-      req.params.id,
-      req.user.email
-    );
-
-    if (!result || result.modifiedCount === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Booking could not be cancelled",
-      });
-    }
+    await cancelBooking(req.params.id, req.user.email);
 
     res.status(200).json({
       success: true,
       message: "Booking cancelled successfully",
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
