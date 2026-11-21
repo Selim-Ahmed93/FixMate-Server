@@ -1,5 +1,18 @@
 import { fromNodeHeaders } from "better-auth/node";
 import { getAuth } from "../config/auth.js";
+import { getDB } from "../config/db.js";
+
+const getRoleFromDatabase = async (email) => {
+  if (!email) {
+    return null;
+  }
+
+  const user = await getDB()
+    .collection("user")
+    .findOne({ email }, { projection: { role: 1 } });
+
+  return user?.role || null;
+};
 
 // 1. Authenticate User
 export const authenticate = async (req, res, next) => {
@@ -17,8 +30,13 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
+    const role = session.user.role || (await getRoleFromDatabase(session.user.email));
+
     // Attach authenticated user to request
-    req.user = session.user;
+    req.user = {
+      ...session.user,
+      role,
+    };
     req.session = session.session;
 
     next();
@@ -29,6 +47,7 @@ export const authenticate = async (req, res, next) => {
     });
   }
 };
+
 // 2. Authorize User Roles
 export const authorizeRoles = (...allowedRoles) => {
   return (req, res, next) => {
