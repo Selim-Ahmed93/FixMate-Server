@@ -1,12 +1,21 @@
 import { ObjectId } from "mongodb";
 import { getDB } from "../config/db.js";
+import { AppError, isDuplicateKeyError } from "../utils/errors.js";
+import {
+  PAYMENT_STATUSES,
+  escapeRegex,
+  requireEmail,
+  requireObjectId,
+  requirePositiveNumber,
+  requireString,
+} from "../utils/validate.js";
 
 // Payments Collection
 const paymentsCollection = () => {
   return getDB().collection("payments");
 };
 
-// 1. Create a new payment
+// 1. Create a new verified payment
 export const createPayment = async (paymentData) => {
   const {
     bookingId,
@@ -16,84 +25,59 @@ export const createPayment = async (paymentData) => {
     technicianName,
     technicianEmail,
     amount,
+    currency,
     transactionId,
     stripeSessionId,
-    stripePaymentVerified,
   } = paymentData;
 
-  // Stripe verification check
-  if (stripePaymentVerified !== true) {
-    throw new Error("Stripe payment is not verified");
-  }
+  const resolvedBookingId = requireObjectId(bookingId, "Booking ID").toString();
 
-  // Required fields validation
-  if (
-    !bookingId ||
-    !transactionId ||
-    !stripeSessionId ||
-    typeof amount !== "number" ||
-    amount <= 0
-  ) {
-    throw new Error("Invalid payment information");
-  }
-
-  const bookingsCollection = getDB().collection("bookings");
-
-  // Check booking eligibility
-  const booking = await bookingsCollection.findOne({
-    _id: new ObjectId(bookingId),
-    status: "completed",
-    paymentStatus: "unpaid",
-  });
-
-  if (!booking) {
-    throw new Error("Booking is not eligible for payment");
-  }
-
-  // Check existing payment
-  const existingPayment = await paymentsCollection().findOne({
-    bookingId,
-  });
-
-  if (existingPayment) {
-    throw new Error("Payment already exists for this booking");
-  }
-
-  // Verify amount against booking
-  if (amount !== booking.finalAmount) {
-    throw new Error("Payment amount does not match booking amount");
+  if (currency !== "usd") {
+    throw new AppError("Payment currency must be USD", 400);
   }
 
   const newPayment = {
-    bookingId,
-    serviceTitle,
-    customerName,
-    customerEmail,
-    technicianName,
-    technicianEmail,
-    amount,
+    bookingId: resolvedBookingId,
+    serviceTitle: requireString(serviceTitle, "Service title", {
+      min: 2,
+      max: 100,
+    }),
+    customerName: requireString(customerName, "Customer name", {
+      min: 2,
+      max: 100,
+    }),
+    customerEmail: requireEmail(customerEmail, "Customer email"),
+    technicianName: requireString(technicianName, "Technician name", {
+      min: 2,
+      max: 100,
+    }),
+    technicianEmail: requireEmail(technicianEmail, "Technician email"),
+    amount: requirePositiveNumber(amount, "Amount"),
     currency: "usd",
-    transactionId,
-    stripeSessionId,
+    transactionId: requireString(transactionId, "Transaction ID", {
+      max: 200,
+    }),
+    stripeSessionId: requireString(stripeSessionId, "Stripe session ID", {
+      max: 200,
+    }),
     paymentStatus: "paid",
     paidAt: new Date(),
   };
 
-  const result = await paymentsCollection().insertOne(newPayment);
+  try {
+    const result = await paymentsCollection().insertOne(newPayment);
 
-  // Update booking payment status
-  await bookingsCollection.updateOne(
-    {
-      _id: new ObjectId(bookingId),
-      status: "completed",
-      paymentStatus: "unpaid",
-    },
-    {
-      $set: { paymentStatus: "paid" },
+    return {
+      ...newPayment,
+      _id: result.insertedId,
+    };
+  } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      throw new AppError("A payment already exists for this booking", 409);
     }
-  );
 
-  return result;
+    throw error;
+  }
 };
 
 // 2. Get payment by ID
@@ -109,7 +93,11 @@ export const getPaymentById = async (id) => {
 
 // 3. Get payment by booking ID
 export const getPaymentByBookingId = async (bookingId) => {
-  return await paymentsCollection().findOne({ bookingId });
+  if (!ObjectId.isValid(bookingId)) {
+    return null;
+  }
+
+  return await paymentsCollection().findOne({ bookingId: String(bookingId) });
 };
 
 // 4. Get customer payment history
@@ -120,7 +108,7 @@ export const getCustomerPayments = async (email) => {
     .toArray();
 };
 
-// 5. Check existing payment by Stripe Session ID
+// 5. Get payment by Stripe Session ID
 export const getPaymentByStripeSession = async (sessionId) => {
   return await paymentsCollection().findOne({
     stripeSessionId: sessionId,
@@ -128,9 +116,39 @@ export const getPaymentByStripeSession = async (sessionId) => {
 };
 
 // 6. Get all payments (Admin)
-export const getAllPayments = async () => {
+export const getAllPayments = async ({ status, search } = {}) => {
+  const query = {};
+
+  if (status !== undefined) {
+    query.paymentStatus = status;
+  }
+
+  if (search) {
+    const pattern = new RegExp(escapeRegex(search), "i");
+    query.$or = [
+      { serviceTitle: pattern },
+      { customerName: pattern },
+      { customerEmail: pattern },
+      { technicianName: pattern },
+      { technicianEmail: pattern },
+      { transactionId: pattern },
+    ];
+  }
+
   return await paymentsCollection()
-    .find()
+    .find(query)
     .sort({ paidAt: -1 })
     .toArray();
+};
+
+// 7. Validate a payment status query value
+export const validatePaymentStatus = (status) => {
+  if (status !== undefined && !PAYMENT_STATUSES.includes(status)) {
+    throw new AppError(
+      `paymentStatus must be one of: ${PAYMENT_STATUSES.join(", ")}`,
+      400,
+    );
+  }
+
+  return status;
 };

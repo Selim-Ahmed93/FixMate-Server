@@ -1,3 +1,20 @@
+import { getStripe } from "../config/stripe.js";
+import { getBookingById } from "../models/booking.model.js";
+import {
+  getPaymentByBookingId,
+  getCustomerPayments,
+  getAllPayments,
+  validatePaymentStatus,
+} from "../models/payment.model.js";
+import {
+  createCheckoutSession,
+  finalizeCheckoutSession,
+  handleWebhookEvent,
+} from "../services/payment.service.js";
+import { AppError } from "../utils/errors.js";
+import { sendControllerError } from "../utils/controller.js";
+import { isObjectId, requireString } from "../utils/validate.js";
+
 // 1. Create Stripe Checkout Session
 export const createCheckoutSessionController = async (req, res) => {
   try {
@@ -8,7 +25,11 @@ export const createCheckoutSessionController = async (req, res) => {
       });
     }
 
-    const { bookingId } = req.body;
+    const bookingId = req.body?.bookingId;
+
+    if (!isObjectId(bookingId)) {
+      throw new AppError("Booking ID is invalid", 400);
+    }
 
     const booking = await getBookingById(bookingId);
 
@@ -36,65 +57,29 @@ export const createCheckoutSessionController = async (req, res) => {
       });
     }
 
-    const existingPayment = await getPaymentByBookingId(
-      bookingId
-    );
+    const existingPayment = await getPaymentByBookingId(bookingId);
 
     if (existingPayment) {
       return res.status(409).json({
         success: false,
-        message: "Payment already exists",
+        message: "Payment already exists for this booking",
       });
     }
 
-    const frontendURL = process.env.FRONTEND_URL;
-
-    if (!frontendURL) {
-      throw new Error("FRONTEND_URL is not configured");
-    }
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-
-      mode: "payment",
-
-      customer_email: req.user.email,
-
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            product_data: {
-              name: booking.serviceTitle,
-            },
-            unit_amount: Math.round(booking.finalAmount * 100),
-          },
-          quantity: 1,
-        },
-      ],
-
-      metadata: {
-        bookingId: booking._id.toString(),
-      },
-
-      success_url: `${frontendURL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-
-      cancel_url: `${frontendURL}/payment/cancel`,
-    });
+    const session = await createCheckoutSession(booking);
 
     res.status(200).json({
       success: true,
       message: "Checkout session created successfully",
+      bookingId,
       sessionId: session.id,
       checkoutUrl: session.url,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
+
 // 2. Verify Stripe Payment
 export const verifyPaymentController = async (req, res) => {
   try {
@@ -105,34 +90,28 @@ export const verifyPaymentController = async (req, res) => {
       });
     }
 
-    const { sessionId } = req.body;
+    const sessionId = requireString(req.body?.sessionId, "Stripe session ID", {
+      max: 200,
+    });
 
-    if (!sessionId) {
-      return res.status(400).json({
-        success: false,
-        message: "Stripe session ID is required",
-      });
-    }
+    const stripe = getStripe();
 
-    // Retrieve session directly from Stripe
-    const session = await stripe.checkout.sessions.retrieve(
-      sessionId
-    );
+    let session;
 
-    if (session.payment_status !== "paid") {
-      return res.status(400).json({
-        success: false,
-        message: "Payment has not been completed",
-      });
+    try {
+      session = await stripe.checkout.sessions.retrieve(sessionId);
+    } catch (error) {
+      if (error?.code === "resource_missing") {
+        throw new AppError("Stripe checkout session not found", 404);
+      }
+
+      throw new AppError("Unable to retrieve Stripe checkout session", 502);
     }
 
     const bookingId = session.metadata?.bookingId;
 
-    if (!bookingId) {
-      return res.status(400).json({
-        success: false,
-        message: "Booking information not found",
-      });
+    if (!isObjectId(bookingId)) {
+      throw new AppError("Booking information not found in Stripe session", 400);
     }
 
     const booking = await getBookingById(bookingId);
@@ -151,68 +130,86 @@ export const verifyPaymentController = async (req, res) => {
       });
     }
 
-    if (
-      session.customer_email !== req.user.email ||
-      session.currency !== "usd" ||
-      session.amount_total !== Math.round(booking.finalAmount * 100)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment information does not match",
-      });
-    }
-
-    if (
-      booking.status !== "completed" ||
-      booking.paymentStatus !== "unpaid"
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Booking is not eligible for payment",
-      });
-    }
-
-    const existingPayment = await getPaymentByStripeSession(
-      sessionId
-    );
-
-    if (existingPayment) {
-      return res.status(200).json({
-        success: true,
-        message: "Payment has already been verified",
-        payment: existingPayment,
-      });
-    }
-
-    if (!session.payment_intent) {
-      return res.status(400).json({
-        success: false,
-        message: "Stripe transaction ID not found",
-      });
-    }
-
-    const paymentData = {
-      bookingId,
-      amount: booking.finalAmount,
-      transactionId: session.payment_intent,
-      stripeSessionId: session.id,
-    };
-
-    const result = await createPayment(paymentData);
+    const result = await finalizeCheckoutSession(session);
 
     res.status(200).json({
       success: true,
-      message: "Payment verified and saved successfully",
-      paymentId: result.insertedId,
+      message: result.alreadyProcessed
+        ? "Payment has already been verified"
+        : "Payment verified and saved successfully",
+      alreadyProcessed: result.alreadyProcessed,
+      paymentId: result.payment._id,
+      payment: result.payment,
     });
   } catch (error) {
-    res.status(500).json({
+    sendControllerError(res, error);
+  }
+};
+
+// 3. Stripe Webhook
+export const stripeWebhookController = async (req, res) => {
+  const signature = req.headers["stripe-signature"];
+
+  if (!signature) {
+    return res.status(400).json({
       success: false,
-      message: error.message,
+      message: "Stripe signature is missing",
+    });
+  }
+
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    return res.status(503).json({
+      success: false,
+      message: "Stripe webhook is not configured",
+    });
+  }
+
+  let event;
+
+  try {
+    const stripe = getStripe();
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      signature,
+      process.env.STRIPE_WEBHOOK_SECRET,
+    );
+  } catch {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid Stripe webhook signature",
+    });
+  }
+
+  try {
+    const result = await handleWebhookEvent(event);
+
+    return res.status(200).json({
+      received: true,
+      ...result,
+    });
+  } catch (error) {
+    if (error instanceof AppError && error.statusCode < 500) {
+      return res.status(200).json({
+        received: true,
+        ignored: true,
+        message: error.message,
+      });
+    }
+
+    console.error(
+      "Stripe webhook processing failed:",
+      event?.type || "unknown",
+      event?.id || "unknown",
+    );
+
+    return res.status(500).json({
+      received: false,
+      message: "Stripe webhook processing failed",
     });
   }
 };
-// 3. Get Customer Payment History
+
+// 4. Get Customer Payment History
 export const getCustomerPaymentHistoryController = async (req, res) => {
   try {
     if (req.user?.role !== "customer") {
@@ -231,16 +228,18 @@ export const getCustomerPaymentHistoryController = async (req, res) => {
       payments,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
-// 4. Get Payment by Booking ID
+
+// 5. Get Payment by Booking ID
 export const getPaymentByBookingIdController = async (req, res) => {
   try {
     const { bookingId } = req.params;
+
+    if (!isObjectId(bookingId)) {
+      throw new AppError("Booking ID is invalid", 400);
+    }
 
     const payment = await getPaymentByBookingId(bookingId);
 
@@ -283,13 +282,11 @@ export const getPaymentByBookingIdController = async (req, res) => {
       payment,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
-// 5. Get All Payments (Admin)
+
+// 6. Get All Payments (Admin)
 export const getAllPaymentsController = async (req, res) => {
   try {
     if (req.user?.role !== "admin") {
@@ -299,7 +296,16 @@ export const getAllPaymentsController = async (req, res) => {
       });
     }
 
-    const payments = await getAllPayments();
+    const { status, search } = req.query;
+
+    validatePaymentStatus(status);
+
+    const payments = await getAllPayments({
+      status,
+      search: search
+        ? requireString(search, "Search", { max: 100 })
+        : undefined,
+    });
 
     res.status(200).json({
       success: true,
@@ -308,9 +314,6 @@ export const getAllPaymentsController = async (req, res) => {
       payments,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    sendControllerError(res, error);
   }
 };
