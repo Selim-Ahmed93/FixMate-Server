@@ -7,7 +7,17 @@ import {
   getTechnicianServicesController,
   updateServiceController,
   updateServiceApprovalController,
+  deleteServiceController,
 } from "../controllers/service.controller.js";
+
+// import {
+//   createServiceController,
+//   getApprovedServicesController,
+//   getServiceByIdController,
+//   getTechnicianServicesController,
+//   updateServiceController,
+//   updateServiceApprovalController,
+// } from "../controllers/service.controller.js";
 
 import {
   authenticate,
@@ -52,6 +62,14 @@ router.patch(
   authenticate,
   authorizeRoles("admin"),
   updateServiceApprovalController
+);
+
+// 7. Delete technician's own service
+router.delete(
+  "/:id",
+  authenticate,
+  authorizeRoles("technician"),
+  deleteServiceController
 );
 
 export default router;
