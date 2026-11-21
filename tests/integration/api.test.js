@@ -1,5 +1,6 @@
 import { before, after, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { MongoClient } from "mongodb";
@@ -8,7 +9,10 @@ import Stripe from "stripe";
 import { createClient } from "../helpers/client.js";
 
 const envPath = fileURLToPath(new URL("../../.env", import.meta.url));
-process.loadEnvFile(envPath);
+
+if (existsSync(envPath)) {
+  process.loadEnvFile(envPath);
+}
 
 const getFreePort = () => {
   return new Promise((resolve, reject) => {
@@ -276,13 +280,18 @@ after(async () => {
       await testDb.dropDatabase();
     } catch {
       // Some managed MongoDB users cannot drop databases. Fall back to
-      // deleting the documents from every collection in the test database.
+      // dropping each collection, then deleting documents if that is also
+      // not permitted.
       try {
         const testDb = client.db(testDbName);
         const collections = await testDb.listCollections().toArray();
 
         for (const { name } of collections) {
-          await testDb.collection(name).deleteMany({});
+          try {
+            await testDb.collection(name).drop();
+          } catch {
+            await testDb.collection(name).deleteMany({});
+          }
         }
       } catch (error) {
         console.warn("Could not clean the test database:", error.message);
